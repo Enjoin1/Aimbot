@@ -94,7 +94,7 @@ local function GetClosestTarget()
         local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
         if not onScreen then continue end
 
-        if Settings.IgnoreWalls and not IsVisible(character) then continue end
+        if not Settings.IgnoreWalls and not IsVisible(character) then continue end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
         if dist < fovRadius and dist < shortest then
@@ -117,16 +117,26 @@ local function NoRecoil()
     if not char then return end
     local tool = char:FindFirstChildOfClass("Tool")
     if not tool then return end
-    local weapon = tool:FindFirstChild("Weapon") or tool:FindFirstChild("Gun")
-    if not weapon then return end
-    for _, v in pairs(weapon:GetDescendants()) do
-        if v:IsA("NumberValue") and v.Name:lower():find("recoil") then
-            v.Value = 0
-        end
-        if v:IsA("CFrameValue") and v.Name:lower():find("recoil") then
-            v.Value = CFrame.new()
+    
+    local function scan(obj)
+        for _, v in pairs(obj:GetDescendants()) do
+            if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
+                local name = v.Name:lower()
+                if name:find("recoil") or name:find("kick") or name:find("shake") or name:find("spread") then
+                    v.Value = 0
+                end
+            end
+            if v:IsA("CFrameValue") then
+                local name = v.Name:lower()
+                if name:find("recoil") or name:find("kick") or name:find("shake") then
+                    v.Value = CFrame.new()
+                end
+            end
         end
     end
+    
+    scan(tool)
+    scan(char)
 end
 
 local function InfiniteAmmo()
@@ -134,16 +144,20 @@ local function InfiniteAmmo()
     if not char then return end
     local tool = char:FindFirstChildOfClass("Tool")
     if not tool then return end
-    local weapon = tool:FindFirstChild("Weapon") or tool:FindFirstChild("Gun")
-    if not weapon then return end
-    for _, v in pairs(weapon:GetDescendants()) do
-        if v:IsA("NumberValue") and (v.Name:lower():find("ammo") or v.Name:lower():find("clip")) then
-            v.Value = 999
-        end
-        if v:IsA("IntValue") and (v.Name:lower():find("ammo") or v.Name:lower():find("clip")) then
-            v.Value = 999
+    
+    local function scan(obj)
+        for _, v in pairs(obj:GetDescendants()) do
+            if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
+                local name = v.Name:lower()
+                if name:find("ammo") or name:find("clip") or name:find("mag") or name:find("bullet") or name:find("reserve") then
+                    v.Value = 999
+                end
+            end
         end
     end
+    
+    scan(tool)
+    scan(char)
 end
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -262,6 +276,9 @@ local function CreateToggle(parent, text, settingKey, default)
         Settings[settingKey] = newState
         btn.Text = newState and "ON" or "OFF"
         btn.BackgroundColor3 = newState and Color3.fromRGB(0, 180, 0) or Color3.fromRGB(180, 0, 0)
+        if settingKey == "ESP" then
+            UpdateESP()
+        end
     end)
 
     return frame
@@ -417,7 +434,9 @@ FOVLabel.Parent = FOVCircleContainer
 
 local function UpdateESP()
     for _, obj in pairs(ESPObjects) do
-        obj.Frame:Destroy()
+        if obj and obj.Frame then
+            obj.Frame:Destroy()
+        end
     end
     ESPObjects = {}
 
@@ -571,7 +590,9 @@ RunService.RenderStepped:Connect(function()
         end
     else
         for _, obj in pairs(ESPObjects) do
-            obj.Frame.Visible = false
+            if obj and obj.Frame then
+                obj.Frame.Visible = false
+            end
         end
     end
 end)
@@ -579,4 +600,7 @@ end)
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(0.5)
     Camera = workspace.CurrentCamera
+    UpdateESP()
 end)
+
+UpdateESP()
