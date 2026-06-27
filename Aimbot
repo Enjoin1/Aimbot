@@ -1,16 +1,13 @@
+-- PHAN 1: KHAI BAO BIEN VA SETTINGS
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
-
-local MenuOpen = true
-local Dragging = false
-local DragStart, DragOffset
+local Camera = workspace.CurrentCamera
 
 local Settings = {
     Aimlock = false,
-    FOV = false,
+    FOVCircle = false,
     ESP = false,
     ESPName = false,
     ESPHealth = false,
@@ -21,14 +18,26 @@ local Settings = {
     IgnoreWalls = false,
     AimPart = "Head",
     FOVRadius = 150,
+    AimSmoothness = 0.7,
     NoRecoil = false,
     InfiniteAmmo = false,
+    Triggerbot = false,
+    TargetMode = "ClosestDistance",
+    RandomOffset = false,
+    OffsetMax = 0.3,
 }
 
+local MenuOpen = true
+local Dragging = false
+local DragStart, DragOffset
 local Target
-local FOVCircleContainer
-local ESPObjects = {}
+local ESPCache = {}
 
+local FOVCircle
+local FOVGlow
+local FOVLabel
+
+-- PHAN 2: CAC HAM TIEN ICH (IsAlive, IsTeammate, IsVisible, GetRandomOffset, GetTargets)
 local function IsAlive(character)
     if not character then return false end
     local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -47,32 +56,35 @@ local function IsTeammate(player)
     return myTeam and theirTeam and myTeam == theirTeam
 end
 
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+rayParams.IgnoreWater = true
+
 local function IsVisible(character)
     if not character then return false end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
     local origin = Camera.CFrame.Position
-    local direction = (hrp.Position - origin).Unit * (hrp.Position - origin).Magnitude
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    local result = workspace:Raycast(origin, direction, raycastParams)
-    if result then
-        local hit = result.Instance
-        if hit and hit:IsDescendantOf(character) then
-            return true
-        else
-            return false
-        end
-    end
-    return true
+    local direction = hrp.Position - origin
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, character}
+    local result = workspace:Raycast(origin, direction, rayParams)
+    if not result then return true end
+    return result.Instance:IsDescendantOf(character)
 end
 
-local function GetClosestTarget()
-    local closest = nil
-    local shortest = math.huge
+local function GetRandomOffset()
+    if not Settings.RandomOffset then return Vector3.new(0, 0, 0) end
+    return Vector3.new(
+        math.random(-Settings.OffsetMax * 10, Settings.OffsetMax * 10) / 10,
+        math.random(-Settings.OffsetMax * 10, Settings.OffsetMax * 10) / 10,
+        math.random(-Settings.OffsetMax * 10, Settings.OffsetMax * 10) / 10
+    )
+end
+
+local function GetTargets()
+    local targets = {}
     local center = Camera.ViewportSize / 2
-    local fovRadius = Settings.FOV and Settings.FOVRadius or math.huge
+    local fovRadius = Settings.FOVCircle and Settings.FOVRadius or math.huge
 
     for _, plr in pairs(Players:GetPlayers()) do
         if plr == LocalPlayer then continue end
@@ -97,32 +109,46 @@ local function GetClosestTarget()
         if not Settings.IgnoreWalls and not IsVisible(character) then continue end
 
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-        if dist < fovRadius and dist < shortest then
-            shortest = dist
-            closest = {
-                Player = plr,
-                Character = character,
-                HRP = hrp,
-                Part = targetPos,
-                ScreenPos = screenPos,
-                Distance = (Camera.CFrame.Position - targetPos).Magnitude,
-            }
-        end
+        if dist > fovRadius then continue end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        table.insert(targets, {
+            Player = plr,
+            Character = character,
+            HRP = hrp,
+            Part = targetPos,
+            ScreenPos = screenPos,
+            Distance = (Camera.CFrame.Position - targetPos).Magnitude,
+            HP = humanoid and humanoid.Health or 0,
+            ScreenDist = dist,
+        })
     end
-    return closest
+
+    if #targets == 0 then return nil end
+
+    if Settings.TargetMode == "LowestHP" then
+        table.sort(targets, function(a, b) return a.HP < b.HP end)
+    elseif Settings.TargetMode == "HighestHP" then
+        table.sort(targets, function(a, b) return a.HP > b.HP end)
+    else
+        table.sort(targets, function(a, b) return a.ScreenDist < b.ScreenDist end)
+    end
+
+    return targets[1]
 end
 
+-- PHAN 3: CAC HAM NO RECOIL, INFINITE AMMO, TRIGGERBOT
 local function NoRecoil()
     local char = LocalPlayer.Character
     if not char then return end
     local tool = char:FindFirstChildOfClass("Tool")
     if not tool then return end
-    
+
     local function scan(obj)
         for _, v in pairs(obj:GetDescendants()) do
             if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
                 local name = v.Name:lower()
-                if name:find("recoil") or name:find("kick") or name:find("shake") or name:find("spread") then
+                if name:find("recoil") or name:find("kick") or name:find("shake") or name:find("spread") or name:find("bounce") then
                     v.Value = 0
                 end
             end
@@ -132,9 +158,15 @@ local function NoRecoil()
                     v.Value = CFrame.new()
                 end
             end
+            if v:IsA("Vector3Value") then
+                local name = v.Name:lower()
+                if name:find("recoil") or name:find("kick") or name:find("shake") then
+                    v.Value = Vector3.new(0, 0, 0)
+                end
+            end
         end
     end
-    
+
     scan(tool)
     scan(char)
 end
@@ -144,33 +176,43 @@ local function InfiniteAmmo()
     if not char then return end
     local tool = char:FindFirstChildOfClass("Tool")
     if not tool then return end
-    
+
     local function scan(obj)
         for _, v in pairs(obj:GetDescendants()) do
             if v:IsA("NumberValue") or v:IsA("IntValue") or v:IsA("FloatValue") then
                 local name = v.Name:lower()
-                if name:find("ammo") or name:find("clip") or name:find("mag") or name:find("bullet") or name:find("reserve") then
+                if name:find("ammo") or name:find("clip") or name:find("mag") or name:find("bullet") or name:find("reserve") or name:find("max") then
                     v.Value = 999
                 end
             end
         end
     end
-    
+
     scan(tool)
     scan(char)
 end
 
+local function Triggerbot()
+    if not Settings.Triggerbot then return end
+    local target = GetTargets()
+    if target then
+        mouse1click()
+    end
+end
+
+-- PHAN 4: TAO SCREENGUI VA MENU
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 ScreenGui.ResetOnSpawn = false
 
 local Menu = Instance.new("Frame")
-Menu.Size = UDim2.new(0, 280, 0, 420)
-Menu.Position = UDim2.new(0.5, -140, 0.5, -210)
+Menu.Size = UDim2.new(0, 280, 0, 460)
+Menu.Position = UDim2.new(0.5, -140, 0.5, -230)
 Menu.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 Menu.BackgroundTransparency = 0.1
 Menu.BorderSizePixel = 0
 Menu.Active = true
+Menu.Draggable = true
 Menu.Parent = ScreenGui
 
 local MenuCorner = Instance.new("UICorner")
@@ -225,6 +267,7 @@ local CloseCorner = Instance.new("UICorner")
 CloseCorner.CornerRadius = UDim.new(0, 8)
 CloseCorner.Parent = CloseBtn
 
+-- PHAN 5: TAO SCROLLING FRAME VA CAC HAM TAO TOGGLE/SELECTOR
 local Scroll = Instance.new("ScrollingFrame")
 Scroll.Size = UDim2.new(1, 0, 1, -30)
 Scroll.Position = UDim2.new(0, 0, 0, 30)
@@ -291,7 +334,7 @@ local function CreateSelector(parent, text, settingKey, options, defaultIndex)
     frame.Parent = parent
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.6, 0, 1, 0)
+    label.Size = UDim2.new(0.5, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.Text = text
     label.TextColor3 = Color3.fromRGB(220, 220, 220)
@@ -301,8 +344,8 @@ local function CreateSelector(parent, text, settingKey, options, defaultIndex)
     label.Parent = frame
 
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 80, 1, -4)
-    btn.Position = UDim2.new(1, -80, 0, 2)
+    btn.Size = UDim2.new(0, 100, 1, -4)
+    btn.Position = UDim2.new(1, -100, 0, 2)
     btn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
     btn.Text = options[defaultIndex]
     btn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -327,7 +370,8 @@ local function CreateSelector(parent, text, settingKey, options, defaultIndex)
 end
 
 CreateToggle(Scroll, "Aimlock", "Aimlock", false)
-CreateToggle(Scroll, "FOV Circle", "FOV", false)
+CreateToggle(Scroll, "FOV Circle", "FOVCircle", false)
+CreateToggle(Scroll, "Triggerbot", "Triggerbot", false)
 CreateToggle(Scroll, "ESP", "ESP", false)
 CreateToggle(Scroll, "ESP Name", "ESPName", false)
 CreateToggle(Scroll, "ESP Health", "ESPHealth", false)
@@ -336,9 +380,11 @@ CreateToggle(Scroll, "ESP Team Color", "ESPTeam", false)
 CreateToggle(Scroll, "Show Teammates", "ShowTeammates", false)
 CreateToggle(Scroll, "Ignore Teammates", "IgnoreTeammates", false)
 CreateToggle(Scroll, "Ignore Walls", "IgnoreWalls", false)
+CreateSelector(Scroll, "Target Mode", "TargetMode", {"ClosestDistance", "LowestHP", "HighestHP"}, 1)
 CreateSelector(Scroll, "Aim Part", "AimPart", {"Head", "Body"}, 1)
 CreateToggle(Scroll, "No Recoil", "NoRecoil", false)
 CreateToggle(Scroll, "Infinite Ammo", "InfiniteAmmo", false)
+CreateToggle(Scroll, "Random Offset", "RandomOffset", false)
 
 local function UpdateCanvas()
     local count = 0
@@ -355,7 +401,7 @@ Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(UpdateCanvas)
 ToggleMenuBtn.MouseButton1Click:Connect(function()
     MenuOpen = not MenuOpen
     if MenuOpen then
-        Menu.Size = UDim2.new(0, 280, 0, 420)
+        Menu.Size = UDim2.new(0, 280, 0, 460)
         Scroll.Visible = true
         ToggleMenuBtn.Text = "_"
     else
@@ -369,59 +415,34 @@ CloseBtn.MouseButton1Click:Connect(function()
     Menu.Visible = false
 end)
 
-TitleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        Dragging = true
-        DragStart = input.Position
-        DragOffset = Menu.Position
-    end
-end)
-
-TitleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        Dragging = false
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if Dragging and input.UserInputType == Enum.UserInputType.Touch then
-        local delta = input.Position - DragStart
-        Menu.Position = UDim2.new(
-            DragOffset.X.Scale,
-            DragOffset.X.Offset + delta.X,
-            DragOffset.Y.Scale,
-            DragOffset.Y.Offset + delta.Y
-        )
-    end
-end)
-
-FOVCircleContainer = Instance.new("Frame")
-FOVCircleContainer.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
-FOVCircleContainer.Position = UDim2.new(0.5, -Settings.FOVRadius, 0.5, -Settings.FOVRadius)
-FOVCircleContainer.BackgroundTransparency = 1
-FOVCircleContainer.BorderSizePixel = 3
-FOVCircleContainer.BorderColor3 = Color3.fromRGB(0, 255, 255)
-FOVCircleContainer.Visible = false
-FOVCircleContainer.Parent = ScreenGui
+-- PHAN 6: TAO FOV CIRCLE
+FOVCircle = Instance.new("Frame")
+FOVCircle.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
+FOVCircle.Position = UDim2.new(0.5, -Settings.FOVRadius, 0.5, -Settings.FOVRadius)
+FOVCircle.BackgroundTransparency = 1
+FOVCircle.BorderSizePixel = 3
+FOVCircle.BorderColor3 = Color3.fromRGB(0, 255, 255)
+FOVCircle.Visible = false
+FOVCircle.Parent = ScreenGui
 
 local FOVCorner = Instance.new("UICorner")
 FOVCorner.CornerRadius = UDim.new(1, 0)
-FOVCorner.Parent = FOVCircleContainer
+FOVCorner.Parent = FOVCircle
 
-local FOVGlow = Instance.new("Frame")
+FOVGlow = Instance.new("Frame")
 FOVGlow.Size = UDim2.new(1, 8, 1, 8)
 FOVGlow.Position = UDim2.new(0.5, -4, 0.5, -4)
 FOVGlow.AnchorPoint = Vector2.new(0.5, 0.5)
 FOVGlow.BackgroundColor3 = Color3.fromRGB(0, 255, 255)
 FOVGlow.BackgroundTransparency = 0.8
 FOVGlow.BorderSizePixel = 0
-FOVGlow.Parent = FOVCircleContainer
+FOVGlow.Parent = FOVCircle
 
 local GlowCorner = Instance.new("UICorner")
 GlowCorner.CornerRadius = UDim.new(1, 0)
 GlowCorner.Parent = FOVGlow
 
-local FOVLabel = Instance.new("TextLabel")
+FOVLabel = Instance.new("TextLabel")
 FOVLabel.Size = UDim2.new(0, 40, 0, 20)
 FOVLabel.Position = UDim2.new(1, 5, 0.5, -10)
 FOVLabel.BackgroundTransparency = 1
@@ -430,15 +451,16 @@ FOVLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
 FOVLabel.TextSize = 14
 FOVLabel.Font = Enum.Font.GothamBold
 FOVLabel.TextXAlignment = Enum.TextXAlignment.Left
-FOVLabel.Parent = FOVCircleContainer
+FOVLabel.Parent = FOVCircle
 
+-- PHAN 7: HAM UPDATE ESP
 local function UpdateESP()
-    for _, obj in pairs(ESPObjects) do
+    for _, obj in pairs(ESPCache) do
         if obj and obj.Frame then
             obj.Frame:Destroy()
         end
     end
-    ESPObjects = {}
+    ESPCache = {}
 
     if not Settings.ESP then return end
 
@@ -507,7 +529,7 @@ local function UpdateESP()
         distLabel.Visible = Settings.ESPDistance
         distLabel.Parent = frame
 
-        ESPObjects[plr] = {
+        ESPCache[plr] = {
             Frame = frame,
             Name = nameLabel,
             Health = healthLabel,
@@ -516,10 +538,11 @@ local function UpdateESP()
     end
 end
 
+-- PHAN 8: VONG LAP CHINH
 RunService.RenderStepped:Connect(function()
-    FOVCircleContainer.Visible = Settings.FOV
-    FOVGlow.Visible = Settings.FOV
-    FOVLabel.Visible = Settings.FOV
+    FOVCircle.Visible = Settings.FOVCircle
+    FOVGlow.Visible = Settings.FOVCircle
+    FOVLabel.Visible = Settings.FOVCircle
     FOVLabel.Text = tostring(Settings.FOVRadius)
 
     if Settings.NoRecoil then
@@ -530,14 +553,18 @@ RunService.RenderStepped:Connect(function()
         InfiniteAmmo()
     end
 
+    if Settings.Triggerbot then
+        Triggerbot()
+    end
+
     if Settings.Aimlock then
-        Target = GetClosestTarget()
+        Target = GetTargets()
         if Target then
-            local targetPos = Target.Part
+            local targetPos = Target.Part + GetRandomOffset()
             local camPos = Camera.CFrame.Position
             Camera.CFrame = Camera.CFrame:Lerp(
                 CFrame.new(camPos, targetPos),
-                0.7
+                Settings.AimSmoothness
             )
         end
     end
@@ -553,7 +580,7 @@ RunService.RenderStepped:Connect(function()
             if not hrp then continue end
 
             local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-            local obj = ESPObjects[plr]
+            local obj = ESPCache[plr]
             if obj and onScreen then
                 obj.Frame.Position = UDim2.new(0, screenPos.X - 100, 0, screenPos.Y - 30)
                 obj.Frame.Visible = true
@@ -589,7 +616,7 @@ RunService.RenderStepped:Connect(function()
             end
         end
     else
-        for _, obj in pairs(ESPObjects) do
+        for _, obj in pairs(ESPCache) do
             if obj and obj.Frame then
                 obj.Frame.Visible = false
             end
@@ -597,6 +624,7 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
+-- PHAN 9: XU LY SU KIEN CHARACTER CHANGED VA KHOI TAO
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(0.5)
     Camera = workspace.CurrentCamera
