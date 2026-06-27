@@ -21,6 +21,8 @@ local Settings = {
     IgnoreWalls = false,
     AimPart = "Head",
     FOVRadius = 150,
+    NoRecoil = false,
+    InfiniteAmmo = false,
 }
 
 local Target
@@ -110,11 +112,44 @@ local function GetClosestTarget()
     return closest
 end
 
+local function NoRecoil()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    local weapon = tool:FindFirstChild("Weapon") or tool:FindFirstChild("Gun")
+    if not weapon then return end
+    for _, v in pairs(weapon:GetDescendants()) do
+        if v:IsA("NumberValue") and v.Name:lower():find("recoil") then
+            v.Value = 0
+        end
+        if v:IsA("CFrameValue") and v.Name:lower():find("recoil") then
+            v.Value = CFrame.new()
+        end
+    end
+end
+
+local function InfiniteAmmo()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    local weapon = tool:FindFirstChild("Weapon") or tool:FindFirstChild("Gun")
+    if not weapon then return end
+    for _, v in pairs(weapon:GetDescendants()) do
+        if v:IsA("NumberValue") and (v.Name:lower():find("ammo") or v.Name:lower():find("clip")) then
+            v.Value = 999
+        end
+        if v:IsA("IntValue") and (v.Name:lower():find("ammo") or v.Name:lower():find("clip")) then
+            v.Value = 999
+        end
+    end
+end
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 ScreenGui.ResetOnSpawn = false
 
--- Menu
 local Menu = Instance.new("Frame")
 Menu.Size = UDim2.new(0, 280, 0, 420)
 Menu.Position = UDim2.new(0.5, -140, 0.5, -210)
@@ -285,6 +320,8 @@ CreateToggle(Scroll, "Show Teammates", "ShowTeammates", false)
 CreateToggle(Scroll, "Ignore Teammates", "IgnoreTeammates", false)
 CreateToggle(Scroll, "Ignore Walls", "IgnoreWalls", false)
 CreateSelector(Scroll, "Aim Part", "AimPart", {"Head", "Body"}, 1)
+CreateToggle(Scroll, "No Recoil", "NoRecoil", false)
+CreateToggle(Scroll, "Infinite Ammo", "InfiniteAmmo", false)
 
 local function UpdateCanvas()
     local count = 0
@@ -341,7 +378,6 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- FOV Circle đẹp hơn
 FOVCircleContainer = Instance.new("Frame")
 FOVCircleContainer.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
 FOVCircleContainer.Position = UDim2.new(0.5, -Settings.FOVRadius, 0.5, -Settings.FOVRadius)
@@ -467,6 +503,14 @@ RunService.RenderStepped:Connect(function()
     FOVLabel.Visible = Settings.FOV
     FOVLabel.Text = tostring(Settings.FOVRadius)
 
+    if Settings.NoRecoil then
+        NoRecoil()
+    end
+
+    if Settings.InfiniteAmmo then
+        InfiniteAmmo()
+    end
+
     if Settings.Aimlock then
         Target = GetClosestTarget()
         if Target then
@@ -474,7 +518,7 @@ RunService.RenderStepped:Connect(function()
             local camPos = Camera.CFrame.Position
             Camera.CFrame = Camera.CFrame:Lerp(
                 CFrame.new(camPos, targetPos),
-                0.2
+                0.7
             )
         end
     end
