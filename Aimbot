@@ -1,10 +1,11 @@
---[[
-    AIMLOCK SCRIPT – Chỉ aimlock, không tự động bắn.
-    - Menu di chuyển được, có nút ẩn/hiện và tắt hoàn toàn.
-    - Khi bật On: camera liên tục ghim vào đầu mục tiêu gần nhất (không phải bản thân).
-    - Tự động phát hiện vật cản (tường, đối tượng) và tạm ngưng aim để dễ di chuyển.
-    - Nếu người chơi kéo camera mạnh (lệch góc > ngưỡng), lập tức hủy aim và tắt chức năng.
---]]
+-- ===== AIMLOCK PRO – CHỈ AIM, KHÔNG TỰ BẮN =====
+-- Tác giả: trợ lý
+-- Tính năng:
+--   + Menu di chuyển được, kích thước nhỏ gọn.
+--   + Bật/tắt aim, ẩn menu, đóng menu hoàn toàn.
+--   + Tự động ghim camera vào đầu mục tiêu gần nhất (không phải bản thân).
+--   + Phát hiện vật cản (tường, đối tượng) → tạm ngưng aim.
+--   + Nếu người chơi kéo camera mạnh → lập tức tắt aim.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -15,36 +16,37 @@ local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 -- ===== CẤU HÌNH =====
-local AIM_RANGE = 100                 -- Khoảng cách tối đa để tìm mục tiêu (studs)
-local STRONG_MOVE_THRESHOLD = 0.25    -- Góc lệch tối đa (radian) trước khi hủy aim (~14 độ)
-local CHECK_OBSTACLE = true           -- Bật/tắt kiểm tra vật cản
+local AIM_RANGE = 120               -- Khoảng cách tối đa (studs)
+local STRONG_MOVE_THRESHOLD = 0.3   -- Góc lệch tối đa (radian) ~17 độ
+local CHECK_OBSTACLE = true         -- Bật/tắt kiểm tra vật cản
 
 -- ===== TRẠNG THÁI =====
-local aimEnabled = false      -- Bật/tắt chức năng aim (qua menu)
-local aimActive = false       -- Đang thực sự ghim camera (không bị cản)
-local currentTarget = nil     -- Character của mục tiêu hiện tại
-local targetPosition = nil    -- Vị trí đầu mục tiêu (cập nhật mỗi frame)
-local isObstructed = false    -- Có vật cản giữa camera và mục tiêu không
+local aimEnabled = false
+local aimActive = false
+local currentTarget = nil
+local targetPosition = nil
+local isObstructed = false
+local loopConnection = nil
 
--- ===== TẠO GIAO DIỆN MENU =====
+-- ===== TẠO MENU =====
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AimlockMenu"
 screenGui.Parent = player.PlayerGui
 
--- Frame chính (có thể kéo thả)
+-- Frame chính (kích thước nhỏ hơn, co giãn theo màn hình)
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 200, 0, 150)
-mainFrame.Position = UDim2.new(0.5, -100, 0.5, -75)
-mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-mainFrame.BackgroundTransparency = 0.15
+mainFrame.Size = UDim2.new(0, 160, 0, 120)   -- 160x120
+mainFrame.Position = UDim2.new(0.5, -80, 0.5, -60)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+mainFrame.BackgroundTransparency = 0.1
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
 mainFrame.Parent = screenGui
 
 -- Thanh tiêu đề (dùng để kéo)
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 30)
-titleBar.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+titleBar.Size = UDim2.new(1, 0, 0, 25)
+titleBar.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
 
@@ -57,10 +59,10 @@ titleLabel.TextScaled = true
 titleLabel.Font = Enum.Font.SourceSansBold
 titleLabel.Parent = titleBar
 
--- Nút bật/tắt (On/Off)
+-- Nút On/Off
 local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(0.8, 0, 0, 40)
-toggleBtn.Position = UDim2.new(0.1, 0, 0.3, 0)
+toggleBtn.Size = UDim2.new(0.8, 0, 0, 35)
+toggleBtn.Position = UDim2.new(0.1, 0, 0.25, 0)
 toggleBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 toggleBtn.Text = "Off"
 toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -68,9 +70,9 @@ toggleBtn.TextScaled = true
 toggleBtn.Font = Enum.Font.SourceSans
 toggleBtn.Parent = mainFrame
 
--- Nút ẩn menu
+-- Nút Hide
 local hideBtn = Instance.new("TextButton")
-hideBtn.Size = UDim2.new(0.3, 0, 0, 30)
+hideBtn.Size = UDim2.new(0.3, 0, 0, 25)
 hideBtn.Position = UDim2.new(0.1, 0, 0.7, 0)
 hideBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
 hideBtn.Text = "Hide"
@@ -79,9 +81,9 @@ hideBtn.TextScaled = true
 hideBtn.Font = Enum.Font.SourceSans
 hideBtn.Parent = mainFrame
 
--- Nút tắt hoàn toàn (X)
+-- Nút X (tắt hoàn toàn)
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0.3, 0, 0, 30)
+closeBtn.Size = UDim2.new(0.3, 0, 0, 25)
 closeBtn.Position = UDim2.new(0.6, 0, 0.7, 0)
 closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
 closeBtn.Text = "X"
@@ -90,13 +92,14 @@ closeBtn.TextScaled = true
 closeBtn.Font = Enum.Font.SourceSans
 closeBtn.Parent = mainFrame
 
--- Nút hiện lại menu (sẽ được tạo khi ẩn)
+-- Nút hiện menu (sẽ tạo khi ẩn)
 local showButton = nil
 
--- ===== HÀM HỖ TRỢ DI CHUYỂN MENU =====
+-- ===== KÉO THẢ MENU (SỬA LỖI) =====
 local function makeDraggable(frame, handle)
     local dragging = false
-    local dragStart, startPos
+    local dragStart = nil
+    local startPos = nil
 
     handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -106,9 +109,16 @@ local function makeDraggable(frame, handle)
         end
     end)
 
-    handle.InputChanged:Connect(function(input)
+    handle.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
             local delta = input.Position - dragStart
+            -- Cập nhật vị trí dạng UDim2 (giữ nguyên tỉ lệ, cộng offset)
             frame.Position = UDim2.new(
                 startPos.X.Scale,
                 startPos.X.Offset + delta.X,
@@ -117,17 +127,11 @@ local function makeDraggable(frame, handle)
             )
         end
     end)
-
-    handle.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
 end
 
 makeDraggable(mainFrame, titleBar)
 
--- ===== CẬP NHẬT GIAO DIỆN =====
+-- ===== CẬP NHẬT UI =====
 local function updateUI()
     if aimEnabled then
         toggleBtn.Text = "On"
@@ -138,7 +142,7 @@ local function updateUI()
     end
 end
 
--- ===== TÌM MỤC TIÊU (người chơi gần nhất, còn sống) =====
+-- ===== TÌM MỤC TIÊU =====
 local function findTarget()
     local character = player.Character
     if not character or not character:FindFirstChild("Head") then return nil end
@@ -167,30 +171,30 @@ local function findTarget()
 end
 
 -- ===== KIỂM TRA VẬT CẢN =====
-local function isObstructedBetween(pos1, pos2)
+local function hasObstacle(origin, targetPos)
     if not CHECK_OBSTACLE then return false end
-    local direction = (pos2 - pos1).Unit
-    local distance = (pos2 - pos1).Magnitude
+    local direction = (targetPos - origin).Unit
+    local distance = (targetPos - origin).Magnitude
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Blacklist
     params.FilterDescendantsInstances = {player.Character, currentTarget}
-    local result = Workspace:Raycast(pos1, direction * distance, params)
+    local result = Workspace:Raycast(origin, direction * distance, params)
     return result ~= nil
 end
 
--- ===== HỦY AIM DO KÉO MẠNH =====
-local function cancelAimDueToStrongMove()
+-- ===== HÀM HỦY AIM DO KÉO MẠNH =====
+local function cancelAim()
     if aimEnabled and aimActive then
         aimActive = false
         currentTarget = nil
         targetPosition = nil
-        aimEnabled = false   -- Tắt hẳn, người dùng phải bật lại qua menu
+        aimEnabled = false
         updateUI()
-        print("Aimlock disabled due to strong camera movement.")
+        print("Aimlock disabled: strong camera move.")
     end
 end
 
--- ===== VÒNG LẶP AIM =====
+-- ===== VÒNG LẶP AIM (MỖI FRAME) =====
 local function updateAim()
     if not aimEnabled then
         aimActive = false
@@ -210,43 +214,39 @@ local function updateAim()
         targetPosition = currentTarget.Head.Position
     end
 
-    -- Vị trí camera hiện tại
     local camPos = camera.CFrame.Position
 
-    -- 2. Kiểm tra vật cản (từ mắt camera đến mục tiêu)
-    if isObstructedBetween(camPos, targetPosition) then
+    -- 2. Kiểm tra vật cản
+    if hasObstacle(camPos, targetPosition) then
         isObstructed = true
-        aimActive = false   -- Tạm ngưng aim
+        aimActive = false   -- Tạm dừng aim
         return
     else
         isObstructed = false
     end
 
-    -- 3. Kiểm tra kéo mạnh (so sánh hướng hiện tại và hướng mong muốn)
+    -- 3. Kiểm tra kéo mạnh
     local currentLook = camera.CFrame.LookVector
     local desiredLook = (targetPosition - camPos).Unit
     local dot = currentLook:Dot(desiredLook)
     local angle = math.acos(math.clamp(dot, -1, 1))
     if angle > STRONG_MOVE_THRESHOLD then
-        cancelAimDueToStrongMove()
+        cancelAim()
         return
     end
 
-    -- 4. Nếu mọi điều kiện tốt → ghim camera vào đầu mục tiêu
+    -- 4. Ghim camera vào đầu mục tiêu
     aimActive = true
-    local newCF = CFrame.new(camPos, targetPosition)
-    camera.CFrame = newCF
+    camera.CFrame = CFrame.new(camPos, targetPosition)
 end
 
 -- ===== QUẢN LÝ VÒNG LẶP =====
-local loopConnection = nil
-
-local function startAimLoop()
+local function startLoop()
     if loopConnection then loopConnection:Disconnect() end
     loopConnection = RunService.RenderStepped:Connect(updateAim)
 end
 
-local function stopAimLoop()
+local function stopLoop()
     if loopConnection then
         loopConnection:Disconnect()
         loopConnection = nil
@@ -255,14 +255,13 @@ local function stopAimLoop()
     currentTarget = nil
 end
 
--- ===== SỰ KIỆN NÚT MENU =====
+-- ===== SỰ KIỆN NÚT =====
 toggleBtn.MouseButton1Click:Connect(function()
     aimEnabled = not aimEnabled
     if aimEnabled then
-        aimActive = false
-        startAimLoop()
+        startLoop()
     else
-        stopAimLoop()
+        stopLoop()
     end
     updateUI()
 end)
@@ -273,7 +272,7 @@ hideBtn.MouseButton1Click:Connect(function()
         showButton = Instance.new("TextButton")
         showButton.Size = UDim2.new(0, 50, 0, 50)
         showButton.Position = UDim2.new(0, 10, 0, 10)
-        showButton.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        showButton.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
         showButton.Text = "Aim"
         showButton.TextColor3 = Color3.fromRGB(255, 255, 255)
         showButton.TextScaled = true
@@ -289,28 +288,27 @@ hideBtn.MouseButton1Click:Connect(function()
 end)
 
 closeBtn.MouseButton1Click:Connect(function()
-    stopAimLoop()
+    stopLoop()
     screenGui:Destroy()
 end)
 
--- ===== XỬ LÝ KHI NHÂN VẬT THAY ĐỔI =====
+-- ===== XỬ LÝ RESPAWN =====
 player.CharacterAdded:Connect(function()
     currentTarget = nil
     targetPosition = nil
     if aimEnabled then
         aimActive = false
-        startAimLoop()
+        startLoop()
     end
 end)
 
 player:GetPropertyChangedSignal("Character"):Connect(function()
     if not player.Character then
-        stopAimLoop()
+        stopLoop()
     end
 end)
 
--- Khởi tạo UI
+-- Khởi tạo
 updateUI()
 
--- ===== (TÙY CHỌN) HIỂN THỊ THÔNG BÁO TRẠNG THÁI =====
--- Bạn có thể thêm TextLabel để hiển thị "Đang aim", "Vật cản", v.v.
+print("Aimlock script loaded. Press On to start.")
